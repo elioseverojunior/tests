@@ -1,0 +1,89 @@
+name: macOS SSH + Homebrew
+
+on:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    # Target is tahoe, but Docker-OSX ships no pre-installed tahoe disk: `latest`
+    # with SHORTNAME=tahoe only boots the installer (no user, no sshd). `auto` is
+    # the only pre-installed image (Catalina), so it proves the SSH + brew
+    # pipeline until a tahoe disk exists for `naked-auto`.
+    name: macOS auto (Catalina) - SSH + Homebrew
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      IMAGE: sickcodes/docker-osx:auto
+      # Public defaults baked into the `auto` image, not secrets.
+      GUEST_USER: user
+      GUEST_PASSWORD: alpine
+      GUEST_PORT: "50922"
+
+    steps:
+      # Run as a step rather than `services:` so disk can be freed before the
+      # multi-GB pull; service containers start before the first step.
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Enable KVM for the runner
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install guest SSH helper
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          sudo tee /usr/local/bin/guest >/dev/null <<'EOF'
+          #!/usr/bin/env bash
+          exec sshpass -p "$GUEST_PASSWORD" ssh \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=10 -o LogLevel=ERROR \
+            -p "$GUEST_PORT" "$GUEST_USER@localhost" "$@"
+          EOF
+          sudo chmod +x /usr/local/bin/guest
+
+      - name: Start macOS container
+        run: |
+          docker run -d --name macos \
+            --device /dev/kvm \
+            -p "$GUEST_PORT:10022" \
+            -e NOPICKER=true \
+            -e EXTRA="-display none" \
+            "$IMAGE"
+
+      # A bare TCP probe is not enough: QEMU's hostfwd accepts the connection
+      # on the host side even while the guest is still booting.
+      - name: Wait for guest SSH
+        timeout-minutes: 30
+        run: |
+          # TODO(user): poll `guest true` until it succeeds, then exit 0.
+          exit 1
+
+      - name: Show guest macOS version
+        run: guest sw_vers
+
+      # Homebrew's NONINTERACTIVE install aborts if sudo prompts for a password,
+      # and a TTY-less SSH session cannot cache sudo credentials reliably.
+      - name: Grant passwordless sudo in guest
+        run: |
+          guest "echo '$GUEST_PASSWORD' | sudo -S sh -c \
+            'echo \"$GUEST_USER ALL=(ALL) NOPASSWD: ALL\" > /etc/sudoers.d/$GUEST_USER'"
+
+      - name: Install Homebrew in guest
+        run: |
+          # shellcheck disable=SC2016 # $(curl ...) must expand in the guest
+          guest 'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+
+      - name: Verify Homebrew
+        run: guest '/usr/local/bin/brew --version && /usr/local/bin/brew config'
+
+      - name: Container logs
+        if: always()
+        run: docker logs macos 2>&1 | tail -n 100

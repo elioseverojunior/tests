@@ -1,0 +1,48 @@
+name: CI com Docker Services
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+
+    # Definição dos serviços Docker
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: admin
+          POSTGRES_PASSWORD: secretpassword
+          POSTGRES_DB: meubanco
+        ports:
+          - 5432:5432
+        # Verifica se o banco está pronto para aceitar conexões antes de iniciar os steps
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Testar conexão com os serviços
+        run: |
+          echo "Testando conexão com o Postgres..."
+          nc -zv localhost 5432
+          echo "Testando conexão com o Redis..."
+          nc -zv localhost 6379

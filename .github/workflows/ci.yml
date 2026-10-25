@@ -6,43 +6,82 @@ on:
   workflow_dispatch:
 
 jobs:
-  testes:
+  macos:
+    name: macOS ${{ matrix.shortname }}
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # O Docker-OSX publica apenas a tag `latest`; a versão do macOS é
+        # escolhida em runtime via SHORTNAME (o BaseSystem é baixado no boot).
+        shortname:
+          - high-sierra
+          - mojave
+          - catalina
+          - big-sur
+          - monterey
+          - ventura
+          - sonoma
+          - sequoia
+          - tahoe
+        include:
+          - shortname: monterey
+            generate-unique: true
+            master-plist-url: https://raw.githubusercontent.com/sickcodes/osx-serial-generator/master/config-custom.plist
+          - shortname: ventura
+            generate-unique: true
+            master-plist-url: https://raw.githubusercontent.com/sickcodes/osx-serial-generator/master/config-custom.plist
+          - shortname: sonoma
+            generate-unique: true
+            cpu: Haswell-noTSX
+            cpuid-flags: kvm=on,vendor=GenuineIntel,+invtsc,vmware-cpuid-freq=on
+            master-plist-url: https://raw.githubusercontent.com/sickcodes/osx-serial-generator/master/config-custom-sonoma.plist
+          - shortname: sequoia
+            generate-unique: true
+            cpu: Haswell-noTSX
+            cpuid-flags: kvm=on,vendor=GenuineIntel,+invtsc,vmware-cpuid-freq=on
+            master-plist-url: https://raw.githubusercontent.com/sickcodes/osx-serial-generator/master/config-custom-sonoma.plist
+          - shortname: tahoe
+            generate-unique: true
+            cpu: Haswell-noTSX
+            cpuid-flags: kvm=on,vendor=GenuineIntel,+invtsc,vmware-cpuid-freq=on
+            master-plist-url: https://raw.githubusercontent.com/sickcodes/osx-serial-generator/master/config-custom-sonoma.plist
 
     # Definição dos serviços Docker
     services:
-      postgres:
-        image: postgres:15
+      macos:
+        image: sickcodes/docker-osx:latest
         env:
-          POSTGRES_USER: admin
-          POSTGRES_PASSWORD: secretpassword
-          POSTGRES_DB: meubanco
+          SHORTNAME: ${{ matrix.shortname }}
+          GENERATE_UNIQUE: ${{ matrix.generate-unique || false }}
+          # Vazios caem nos defaults do Launch.sh (${CPU:-Penryn}, etc.)
+          CPU: ${{ matrix.cpu }}
+          CPUID_FLAGS: ${{ matrix.cpuid-flags }}
+          MASTER_PLIST_URL: ${{ matrix.master-plist-url || 'https://raw.githubusercontent.com/sickcodes/osx-serial-generator/master/config-custom.plist' }}
+          # Runner não tem X11: roda o QEMU sem display
+          EXTRA: -display none
         ports:
-          - 5432:5432
-        # Verifica se o banco está pronto para aceitar conexões antes de iniciar os steps
+          - 50922:10022
+        # KVM é obrigatório; a health check aguarda o download do BaseSystem
+        # e o QEMU estar de pé antes de iniciar os steps
         options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-      redis:
-        image: redis:alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          --device /dev/kvm
+          --health-cmd "pgrep -f qemu-system-x86_64"
+          --health-interval 30s
+          --health-timeout 10s
+          --health-start-period 60s
+          --health-retries 40
 
     steps:
       - name: Checkout do código
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Testar conexão com os serviços
+      - name: Testar conexão com o serviço
         run: |
-          echo "Testando conexão com o Postgres..."
-          nc -zv localhost 5432
-          echo "Testando conexão com o Redis..."
-          nc -zv localhost 6379
+          echo "Testando o encaminhamento SSH do QEMU (macOS ${{ matrix.shortname }})..."
+          nc -zv localhost 50922
+
+      - name: Logs do container
+        if: always()
+        run: docker logs "${{ job.services.macos.id }}" 2>&1 | tail -n 100
